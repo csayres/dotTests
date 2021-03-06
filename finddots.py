@@ -37,7 +37,7 @@ mask[:3020, 650:4585] = 0
 invmask = numpy.zeros((rowPix, colPix))
 # invmask[:3020, 650:4585] = 1
 
-invmask[rowCen-1000:rowCen+1001,colCen-1000:colCen+1001] = 1
+invmask[rowCen-1200:rowCen+1201,colCen-1200:colCen+1201] = 1
 # invmask[:, 819:4742] = 1
 # invmask[:,:] = 1
 
@@ -853,7 +853,7 @@ def fit(img):
 if __name__ == "__main__":
     # bestfile = "cam2_meandots_0.010.fits"
     # for file in glob.glob("*.fits"):
-    for file in ["cam0_meandots_0.005.fits"]:
+    for file in ["mean_005_4.25um.fits"]:
         print('on file', file)
         centroidSkimage(file, plot=False)
         associate(file)
