@@ -37,7 +37,7 @@ mask[:3020, 650:4585] = 0
 invmask = numpy.zeros((rowPix, colPix))
 # invmask[:3020, 650:4585] = 1
 
-invmask[rowCen-1200:rowCen+1201,colCen-1200:colCen+1201] = 1
+invmask[rowCen-1000:rowCen+1001,colCen-1000:colCen+1001] = 1
 # invmask[:, 819:4742] = 1
 # invmask[:,:] = 1
 
