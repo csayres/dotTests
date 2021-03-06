@@ -9,7 +9,7 @@ import glob
 from skimage.measure import regionprops, label
 from sklearn.cluster import KMeans
 from skimage.feature import blob_log, blob_dog, blob_doh
-from skimage.transform import AffineTransform
+from skimage.transform import AffineTransform, EuclideanTransform, SimilarityTransform
 
 from fibermeas.plotutils import plotCircle, imshow
 from coordio.fitData import TransRotScaleModel, ModelFit, QuadrupoleModel
@@ -18,13 +18,11 @@ import os
 
 import seaborn as sns
 
-_imgs = glob.glob("mediandots*.fits")
-_imgs2 = glob.glob("meandots*.fits")
+cam1Shape = (3660, 5488)
+cam2Shape = (3660, 5484)
 
-imgs = _imgs + _imgs2
-
-rowPix = 3660
-colPix = 5488
+rowPix = cam1Shape[0]
+colPix = cam1Shape[1]
 
 rowCen = int(rowPix/2)
 colCen = int(colPix/2)
@@ -39,7 +37,9 @@ mask[:3020, 650:4585] = 0
 invmask = numpy.zeros((rowPix, colPix))
 # invmask[:3020, 650:4585] = 1
 
-invmask[rowCen-1000:rowCen+1001,colCen-1000:colCen+1001] = 1
+invmask[rowCen-1200:rowCen+1201,colCen-1200:colCen+1201] = 1
+# invmask[:, 819:4742] = 1
+# invmask[:,:] = 1
 
 # https://www.edmundoptics.com/p/150-x-150mm-1000mm-spacing-opal-distortion-target/18703/
 # 63-991
@@ -56,7 +56,6 @@ invmask[rowCen-1000:rowCen+1001,colCen-1000:colCen+1001] = 1
 # https://scikit-image.org/docs/dev/user_guide/numpy_images.html#coordinate-conventions
 
 # SK mediandots_0.005.fits might be best
-bestfile = "mediandots_0.005.fits"
 
 # note that PosMinusIndex in pyGuide needs to be 0 to match
 # skimage measurment conventions...
@@ -71,18 +70,6 @@ def getImgData(imgName):
     data = skimage.util.invert(data)
     data = data - numpy.min(data)
     return data
-
-
-def parseFile(filename):
-    with open(filename, "r") as f:
-        lines = f.readlines()
-
-    arr = []
-    for line in lines:
-        row = [float(x) for x in line.split(",")]
-        arr.append(row)
-
-    return numpy.array(arr)
 
 
 def centroidSkimage(img, plot=True):
@@ -102,7 +89,15 @@ def centroidSkimage(img, plot=True):
     # data = data[2775:2775+150, 700:700+150] # top left corner
     # thresh = (data > numpy.percentile(data, 95))
 
-    thresh = (data > numpy.max(data) - 1000 ) # 1000 counts below max
+    if plot:
+        plt.figure()
+        print("data stats", numpy.median(data), numpy.mean(data), numpy.std(data))
+        plt.hist(data.flatten())
+        plt.show()
+
+    thresh = (data > numpy.max(data) - 50) # 1000 counts below max
+
+    # thresh = data > 2*numpy.std(data)
 
     # plt.figure()
     # imshow(thresh)
@@ -133,8 +128,27 @@ def centroidSkimage(img, plot=True):
 
     centroidData = numpy.array([xCent, yCent, ecen, rad]).T
 
-    radCut = centroidData[:,-1] > 6
-    centroidData = centroidData[radCut]
+
+    # lq = numpy.percentile(centroidData[:,-1], 25)
+    # uq = numpy.percentile(centroidData[:,-1], 99)
+
+    # 2 sigma cut to throw out outliers
+
+    # ecenCut = centroidData[:,2] < 0.4
+    # centroidData = centroidData[ecenCut]
+
+    # # radius cut
+    # meanRad = numpy.mean(centroidData[:,-1])
+    # stdRad = numpy.std(centroidData[:,-1])
+
+    # keep = numpy.abs(centroidData[:,-1]-meanRad) < 1.5*stdRad
+    # centroidData = centroidData[keep]
+
+    # radCut = centroidData[:,-1] > lq
+    # centroidData = centroidData[radCut]
+
+    # radCut = centroidData[:,-1] < uq
+    # centroidData = centroidData[radCut]
 
     if plot:
         plt.figure()
@@ -146,15 +160,20 @@ def centroidSkimage(img, plot=True):
         plt.title("rad")
 
         plt.show()
+        # import pdb; pdb.set_trace()
 
         t1 = time.time()
         plt.figure(figsize=(8,8))
         plt.title(img)
-        imshow(data)  # extent is set correctly so centers line up
+        imshow(sobel(data))  # extent is set correctly so centers line up
         for _x, _y, _e, _r in centroidData:
-            plotCircle(_x, _y, _r)
+            plotCircle(_x, _y, 0.8*_r)
         print("plotting took", time.time()-t1)
         plt.show()
+
+    # import pdb; pdb.set_trace()
+
+
 
     # save data
     numpy.savetxt(img + ".centroids", centroidData)
@@ -223,6 +242,8 @@ def associate(img):
     roughScale = 1/numpy.sqrt((dx)**2+(dy)**2) # mm/pixel
     roughAngle = numpy.arctan2(dy,dx)
 
+    print("rough angle", numpy.degrees(roughAngle))
+
     rotMat = numpy.array([
         [numpy.cos(roughAngle), -numpy.sin(roughAngle)],
         [numpy.sin(roughAngle), numpy.cos(roughAngle)]
@@ -251,10 +272,10 @@ def associate(img):
     for x, y in xy:
         _rx = numpy.round(x)
         _ry = numpy.round(y)
-        if numpy.abs(x-_rx) > 0.15:
+        if numpy.abs(x-_rx) > 0.2:
             print("skipping centroid")
             continue
-        if numpy.abs(y-_ry) > 0.15:
+        if numpy.abs(y-_ry) > 0.2:
             print("skipping centroid")
             continue
         xyAssoc.append([x,y,_rx,_ry])
@@ -583,16 +604,16 @@ def fit(img):
     # xyMeas = xyMeas - meanXY
     # xyExpect = xyExpect - meanXY
 
-    # use the plot to find the center of divergence...
+    # # use the plot to find the center of divergence...
     err = xyExpect - xyMeas
-    magErr = numpy.linalg.norm(err, axis=1)
+    # magErr = numpy.linalg.norm(err, axis=1)
 
-    # throw out outliers
-    keep = magErr*1000 < 190
-    xyMeas = xyMeas[keep]
-    print("threw out", len(xyExpect) - len(xyMeas))
-    xyExpect = xyExpect[keep]
-    err = err[keep]
+    # # throw out outliers
+    # keep = magErr*1000 < 190
+    # xyMeas = xyMeas[keep]
+    # print("threw out", len(xyExpect) - len(xyMeas))
+    # xyExpect = xyExpect[keep]
+    # err = err[keep]
 
     # make it circular
     # _r = numpy.linalg.norm(xyMeas, axis=1)
@@ -603,8 +624,9 @@ def fit(img):
     # err = err[keep]
 
     plt.figure(figsize=(9,9))
-    plt.quiver(xyMeas[:,0], xyMeas[:,1], err[:,0], err[:,1], angles="xy", scale=1.5)
+    plt.quiver(xyMeas[:,0], xyMeas[:,1], err[:,0], err[:,1], angles="xy", scale=2)
     plt.axis("equal")
+    plt.title("raw errors")
     plt.show()
 
     # xMid = 81.5
@@ -616,14 +638,20 @@ def fit(img):
     print("RMS err prefit (micron)", numpy.sqrt(numpy.mean(err**2))*1000)
 
 
-    model = AffineTransform()
-    t1 = time.time()
-    isOK = model.estimate(xyMeas, xyExpect)
-    print("affine fit took", time.time()-t1)
-    if not isOK:
-        raise RuntimeError("affine fit failed")
-    xyFitAff = model(xyMeas)
+    if True:
+        model = AffineTransform()
+        # model = EuclideanTransform()
+        # model = SimilarityTransform()
+        t1 = time.time()
+        isOK = model.estimate(xyMeas, xyExpect)
+        print("affine fit took", time.time()-t1)
+        if not isOK:
+            raise RuntimeError("affine fit failed")
+        xyFitAff = model(xyMeas)
 
+        print("model", model.translation, numpy.degrees(model.rotation), model.scale)
+    else:
+        xyFitAff = xyMeas
 
 
     err = xyExpect - xyFitAff
@@ -671,7 +699,7 @@ def fit(img):
     plt.title("Unit-ified")
 
     xErr = err[:,0]
-    yErr = err[:,0]
+    yErr = err[:,1]
     xyErr = numpy.hstack((xErr,yErr))
 
     print("mean/std xyErr", numpy.mean(xyErr), numpy.std(xyErr))
@@ -680,7 +708,7 @@ def fit(img):
     yUnit = xyFitUnit[:,1]
 
     if False:
-        nRadTerms = 8
+        nRadTerms = 4
         t1 = time.time()
         zern, dx, dy = zerns2(xUnit, yUnit, nRadTerms)
         dx = dx[3:]
@@ -726,8 +754,6 @@ def fit(img):
         plt.quiver(xUnit, yUnit, dxFit, dyFit, angles="xy", scale=vecScale*rScale*.8)
         plt.title("zernike fit directions terms=%i"%len(coef))
 
-        plt.show()
-
         xZernFit = xUnit + dxFit
         yZernFit = yUnit + dyFit
 
@@ -736,6 +762,11 @@ def fit(img):
         err = xyExpectUnit - xyZernFit
 
         print("RMS err post zern fit (micron)", numpy.sqrt(numpy.mean(err**2))*1000/rScale)
+
+        plt.figure(figsize=(9,9))
+        plt.quiver(xUnit, yUnit, err[:,0], err[:,0], angles="xy", scale=0.5*vecScale*rScale)
+        plt.title("zernike fit residuals")
+        plt.show()
 
         # plt.figure(figsize=(9,9))
         # plt.quiver(xUnit, yUnit, dxFit, dyFit, angles="xy", scale=vecScale*rScale)
@@ -754,7 +785,7 @@ def fit(img):
             dx[ii, :] = dxy[:,0]
             dy[ii, :] = dxy[:,1]
 
-        # standardize features
+        #standardize features
         # mdx = numpy.mean(dx,axis=0)
         # stdx = numpy.std(dx,axis=0)
         # dx = (dx - mdx)/stdx
@@ -765,7 +796,12 @@ def fit(img):
 
         dxy = numpy.vstack((dx,dy))
 
-        # standardize response
+        # mdxy = numpy.mean(dxy, axis=0)
+        # stdxy = numpy.std(dxy, axis=0)
+
+        # dxy = (dxy - mdxy)/stdxy
+
+        #standardize response
         # mxyErr = numpy.mean(xyErr)
         # stdErr = numpy.std(xyErr)
         # xyErr = (xyErr - mxyErr)/stdErr
@@ -774,10 +810,10 @@ def fit(img):
         coef, resid, rank, s = numpy.linalg.lstsq(dxy, xyErr)
         print("zern fit took", time.time()-t1)
 
-        # plt.figure()
-        # plt.plot(numpy.arange(len(coef)), coef)
-        # plt.title("coeffs")
-        # plt.show()
+        plt.figure()
+        plt.plot(numpy.arange(len(coef)), coef)
+        plt.title("coeffs")
+        plt.show()
 
         dxFit = dx @ coef
         dyFit = dy @ coef
@@ -786,8 +822,6 @@ def fit(img):
         plt.quiver(xUnit, yUnit, dxFit, dyFit, angles="xy", scale=vecScale*rScale)
         plt.title("zernike fit directions")
 
-        plt.show()
-
         xZernFit = xUnit + dxFit
         yZernFit = yUnit + dyFit
 
@@ -795,17 +829,36 @@ def fit(img):
 
         err = xyExpectUnit - xyZernFit
 
+        # plt.figure()
+        # errAng = numpy.degrees(numpy.arctan2(err[:,1], err[:,0]))
+        # errMag = numpy.sqrt(err[:,1]**2+err[:,0]**2)
+        # keep = errMag > numpy.mean(errMag)
+        # errAng = errAng[keep]
+        # plt.hist(errAng)
+        # plt.title("error angle")
+        # plt.show()
+
         print("RMS err post zern fit (micron)", numpy.sqrt(numpy.mean(err**2))*1000/rScale)
 
+
+        plt.figure(figsize=(9,9))
+        plt.quiver(xUnit, yUnit, err[:,0], err[:,1], angles="xy", scale=0.5*vecScale*rScale)
+        plt.title("zernike fit residuals")
+        plt.show()
         # import pdb; pdb.set_trace()
 
 
     # import pdb; pdb.set_trace()
 
 if __name__ == "__main__":
-    # centroidSkimage(bestfile, plot=False)
-    # associate(bestfile)
-    fit(bestfile)
+    # bestfile = "cam2_meandots_0.010.fits"
+    # for file in glob.glob("*.fits"):
+    for file in ["cam0_meandots_0.005.fits"]:
+        print('on file', file)
+        centroidSkimage(file, plot=False)
+        associate(file)
+        fit(file)
+        print("\n\n\n")
 
     # xs = numpy.linspace(-0.5,0.5,10)
     # ys = xs[:]
