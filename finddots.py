@@ -37,7 +37,7 @@ mask[:3020, 650:4585] = 0
 invmask = numpy.zeros((rowPix, colPix))
 # invmask[:3020, 650:4585] = 1
 
-invmask[rowCen-1200:rowCen+1201,colCen-1200:colCen+1201] = 1
+invmask[rowCen-1000:rowCen+1001,colCen-1000:colCen+1001] = 1
 # invmask[:, 819:4742] = 1
 # invmask[:,:] = 1
 
@@ -69,6 +69,7 @@ def getImgData(imgName):
     data = fitsio.read(imgName)
     data = skimage.util.invert(data)
     data = data - numpy.min(data)
+    data = data / numpy.max(data)
     return data
 
 
@@ -82,7 +83,11 @@ def centroidSkimage(img, plot=True):
         imshow(data)
         plt.show()
 
-    data = data * invmask
+    # data = data * invmask
+
+    # data = (data - numpy.mean(data))/numpy.std(data)
+
+    # data = data/numpy.max(data)
 
 
     # data = data[rowCen-150:rowCen+150, colCen-150:colCen+150] # center
@@ -92,10 +97,11 @@ def centroidSkimage(img, plot=True):
     if plot:
         plt.figure()
         print("data stats", numpy.median(data), numpy.mean(data), numpy.std(data))
-        plt.hist(data.flatten())
+        plt.hist(data.flatten(), bins=100)
+
         plt.show()
 
-    thresh = (data > numpy.max(data) - 50) # 1000 counts below max
+    thresh = (data > 0.93)
 
     # thresh = data > 2*numpy.std(data)
 
@@ -118,7 +124,8 @@ def centroidSkimage(img, plot=True):
     rad = []
 
     for region in props:
-        _yCent, _xCent = region.weighted_centroid
+        # _yCent, _xCent = region.weighted_centroid
+        _yCent, _xCent = region.centroid
         _ecen = region.eccentricity
         _rad = region.equivalent_diameter/2
         xCent.append(_xCent)
@@ -129,26 +136,9 @@ def centroidSkimage(img, plot=True):
     centroidData = numpy.array([xCent, yCent, ecen, rad]).T
 
 
-    # lq = numpy.percentile(centroidData[:,-1], 25)
-    # uq = numpy.percentile(centroidData[:,-1], 99)
+    ecenCut = centroidData[:,2] < 0.4
+    centroidData = centroidData[ecenCut]
 
-    # 2 sigma cut to throw out outliers
-
-    # ecenCut = centroidData[:,2] < 0.4
-    # centroidData = centroidData[ecenCut]
-
-    # # radius cut
-    # meanRad = numpy.mean(centroidData[:,-1])
-    # stdRad = numpy.std(centroidData[:,-1])
-
-    # keep = numpy.abs(centroidData[:,-1]-meanRad) < 1.5*stdRad
-    # centroidData = centroidData[keep]
-
-    # radCut = centroidData[:,-1] > lq
-    # centroidData = centroidData[radCut]
-
-    # radCut = centroidData[:,-1] < uq
-    # centroidData = centroidData[radCut]
 
     if plot:
         plt.figure()
@@ -160,43 +150,21 @@ def centroidSkimage(img, plot=True):
         plt.title("rad")
 
         plt.show()
-        # import pdb; pdb.set_trace()
 
         t1 = time.time()
         plt.figure(figsize=(8,8))
         plt.title(img)
         imshow(sobel(data))  # extent is set correctly so centers line up
         for _x, _y, _e, _r in centroidData:
-            plotCircle(_x, _y, 0.8*_r)
+            plotCircle(_x, _y, _r)
         print("plotting took", time.time()-t1)
         plt.show()
-
-    # import pdb; pdb.set_trace()
-
 
 
     # save data
     numpy.savetxt(img + ".centroids", centroidData)
 
-    #     t1 = time.time()
-    #     print(img)
-    #     filename = "SK_%s.txt"%img
-    #     with open(filename, "w") as f:
-    #         for region in props:
-    #             _yCent, _xCent = region.centroid
-    #             yCent, xCent = region.weighted_centroid
-    #             centErr.append(numpy.sqrt((yCent-_yCent)**2+(xCent-_xCent)**2))
-    #             ecen.append(region.eccentricity)
-    #             rad = region.equivalent_diameter/2
-    #             f.write("%.5f, %.5f, %.5f, %.5f, %.5f, %.5f\n"%(xCent, yCent, _xCent, _yCent, region.eccentricity, rad))
-    #             plotCircle(xCent, yCent, rad)
-    #         print("plotting took", time.time()-t1)
-    #         print("mean cent error", numpy.mean(centErr))
-    #         print("mean eccentricity", numpy.mean(ecen))
-    #         print("")
 
-    # plt.show()
-        # break
 
 
 def associate(img):
@@ -207,8 +175,8 @@ def associate(img):
     centroidData = numpy.loadtxt(centFile)
 
     # find the central dot
-    x = centroidData[:,0]
-    y = centroidData[:,1]
+    x = centroidData[:, 0]
+    y = centroidData[:, 1]
 
     meanX = numpy.mean(x)
     meanY = numpy.mean(y)
@@ -240,166 +208,95 @@ def associate(img):
     dy = yRight - yMid
 
     roughScale = 1/numpy.sqrt((dx)**2+(dy)**2) # mm/pixel
-    roughAngle = numpy.arctan2(dy,dx)
+    # roughAngle = numpy.arctan2(dy,dx)
 
-    print("rough angle", numpy.degrees(roughAngle))
+    print("rough scale", roughScale)
 
-    rotMat = numpy.array([
-        [numpy.cos(roughAngle), -numpy.sin(roughAngle)],
-        [numpy.sin(roughAngle), numpy.cos(roughAngle)]
-    ])
+    # rotMat = numpy.array([
+    #     [numpy.cos(roughAngle), -numpy.sin(roughAngle)],
+    #     [numpy.sin(roughAngle), numpy.cos(roughAngle)]
+    # ])
 
     # rotate and scale centroids, about central point
     # to put units into roughly mm and aligned with xy
+    # calculate xy offset from xyMid to central pixel
+    # even number of pixels, center of chip is at a pixel
+    # corner
+    # chipCenX = colCen - 0.5
+    # chipCenY = rowCen - 0.5
+
+    # offX = xMid - chipCenX
+    # offY = yMid - chipCenY
+
     x = x - xMid
     y = y - yMid
 
     x *= roughScale
     y *= roughScale
 
-    xy = numpy.array([x,y])
+    xy = numpy.array([x, y]).T
 
-    _xy = rotMat @ xy
+    # _xy = rotMat @ xy
 
-    fig, (ax1,ax2) = plt.subplots(2,1)
-    ax1.hist(xy[1], bins=1000)
-    ax2.hist(_xy[1], bins=1000)
-    plt.show()
+    # fig, (ax1,ax2) = plt.subplots(2,1)
+    # ax1.hist(xy[1], bins=1000)
+    # ax1.set_xlim([-3.1, 3.1])
+    # ax2.hist(_xy[1], bins=1000)
+    # ax2.set_xlim([-3.1, 3.1])
+    # plt.show()
 
-    xy = _xy.T
+    # xy = _xy.T
 
     xyAssoc = []
+    centroidsSkipped = 0
     for x, y in xy:
         _rx = numpy.round(x)
         _ry = numpy.round(y)
         if numpy.abs(x-_rx) > 0.2:
-            print("skipping centroid")
+            centroidsSkipped += 1
             continue
         if numpy.abs(y-_ry) > 0.2:
-            print("skipping centroid")
+            centroidsSkipped += 1
             continue
         xyAssoc.append([x,y,_rx,_ry])
 
+    print("skipped", centroidsSkipped, "centroids")
     xyAssoc = numpy.array(xyAssoc)
 
-    err = xyAssoc[:,2:] - xyAssoc[:,:2]
-    plt.figure(figsize=(9,9))
-    plt.quiver(xyAssoc[:,0], xyAssoc[:,1], err[:,0], err[:,1], scale=1.5)
+    ## shift origin to center of CCD
+    xPixCCDCen = colCen - 0.5
+    yPixCCDCen = rowCen - 0.5
+
+
+    xCen = xPixCCDCen - xMid
+    yCen = yPixCCDCen - yMid
+
+    xCen *= roughScale
+    yCen *= roughScale
+
+    xyAssoc[:, 0] -= xCen
+    xyAssoc[:, 2] -= xCen
+    xyAssoc[:, 1] -= yCen
+    xyAssoc[:, 3] -= yCen
+
+    # put things back in pixels
+    # we'll do a full fit against pixels
+
+    xyAssoc[:,0] /= roughScale
+    xyAssoc[:,1] /= roughScale
+
+    plt.figure()
+    plt.plot(xyAssoc[:,0], xyAssoc[:,1], 'or')
+    plt.plot(xyAssoc[:,2], xyAssoc[:,3], 'ob')
     plt.show()
+
+    # err = xyAssoc[:,2:] - xyAssoc[:,:2]
+    # plt.figure(figsize=(9,9))
+    # plt.quiver(xyAssoc[:,0], xyAssoc[:,1], err[:,0], err[:,1], scale=1.5/roughScale)
+    # plt.show()
+
     # sort xy by
     numpy.savetxt(img+".assoc", xyAssoc)
-
-    # import pdb; pdb.set_trace()
-
-
-
-
-    # topLX, topLY = 664.61489, 2980.8192  # top left dot
-    # r1 = 7.0223764
-
-    # x2, y2, = 4538.7292, 2994.2876 # top right dot
-    # r2 = 6.4945258
-    # # scale in mm/pixel
-    # roughScale = 149/numpy.linalg.norm([topLX-x2, topLY-y2])
-    # # angle
-    # _x = x2-topLX
-    # _y = y2-topLY
-    # roughAngle = numpy.arctan2(_y, _x)
-
-
-    # # middle of chip
-    # x1, y1 = 2453.7021, 1308.4415
-    # x2, y2 = 2608.5536, 1309.2168
-    # roughScale = 6/numpy.linalg.norm([x1-x2, y1-y2])
-
-
-
-
-    # rotMat = numpy.array([
-    #     [numpy.cos(-roughAngle), -numpy.sin(-roughAngle)],
-    #     [numpy.sin(-roughAngle), numpy.cos(-roughAngle)]
-    # ])
-
-    # for centType in ["SK"]:
-    #     for img in imgs:
-    #         if img != bestfile:
-    #             continue
-    #         print("")
-    #         print("")
-    #         print(centType, img)
-    #         filename = "%s_%s.txt" % (centType, img)
-    #         centData = parseFile(filename)[:, 2:4]  # just xy
-    #         print(centData.shape)
-    #         topLeft = numpy.array([[topLX,topLY]]*len(centData))
-    #         print(topLeft.shape)
-    #         diff = centData - topLeft
-    #         dist = numpy.linalg.norm(diff, axis=1)
-    #         arg = numpy.argmin(dist)
-    #         if dist[arg] > 5: # within 5 pixels
-    #             print("cannot find top left dot skipping")
-    #             continue  # closer that 5 pixels
-
-    #         # scale data to roughly mm
-    #         centData = centData * roughScale
-
-    #         # set origin to top left dot
-    #         centData = centData - centData[arg,:]
-
-    #         # rotate by rough angle
-    #         centData = rotMat.dot(centData.T).T
-
-    #         xyExpect = []
-    #         xyMeas = []
-    #         missingDots = 0
-    #         for yDot in range(150):
-    #             yDot = -1*yDot
-    #             nXs = 0
-    #             for xDot in range(150):
-    #                 xyTest = numpy.array([xDot,yDot])
-    #                 diff = centData - xyTest
-    #                 dist = numpy.linalg.norm(diff, axis=1)
-    #                 arg = numpy.argmin(dist)
-    #                 if dist[arg] > 1:  # throw out measurements > 800 micron error, they're no good
-    #                     # print("missed dot, continuing")
-    #                     missingDots += 1
-    #                     continue
-    #                 nXs += 1
-    #                 xyExpect.append(numpy.array([xDot, yDot]))
-    #                 xyMeas.append(numpy.array(centData[arg,:]))
-    #             if yDot == 0:
-    #                 print("got %i xs"%nXs)
-
-    #         xyMeas = numpy.array(xyMeas)
-    #         xyExpect = numpy.array(xyExpect)
-
-    #         print("found", len(xyMeas), "dots")
-    #         print("missing", missingDots, "dots")
-
-    #         dxy = xyMeas - xyExpect
-
-    #         dx = dxy[:,0]
-    #         dy = dxy[:,1]
-
-    #         # plt.figure()
-    #         # plt.hist(numpy.sqrt(dx**2+dy**2)*1000, bins=100)
-    #         # plt.show()
-
-    #         rms = numpy.sqrt(numpy.mean(dx**2+dy**2))
-    #         print("rms micron", rms*1000)
-
-    #         plt.figure(figsize=(9,9))
-    #         plt.title(filename)
-    #         plt.quiver(xyMeas[:,0], xyMeas[:,1], dx, dy, angles="xy", scale=20)
-    #         plt.axis("equal")
-
-    #         nPts = len(xyMeas)
-    #         assocArray = numpy.zeros((nPts, 4))
-    #         assocArray[:,0] = xyMeas[:,0]
-    #         assocArray[:,1] = xyMeas[:,1]
-    #         assocArray[:,2] = xyExpect[:,0]
-    #         assocArray[:,3] = xyExpect[:,1]
-    #         numpy.savetxt(filename+".npy", assocArray)
-
 
 
 def zerns(x, y):
@@ -596,8 +493,8 @@ def fit(img):
 
     filename = img+".assoc" #"SK_mediandots_0.005.fits.txt.npy"
     data = numpy.loadtxt(filename)
-    xyMeas = data[:,:2]
-    xyExpect = data[:,2:]
+    xyMeas = data[:,:2] # pixels
+    xyExpect = data[:,2:]   # mm
 
     # meanXY = numpy.mean(xyMeas, axis=0)
     # # meanXY = numpy.array([65, -35])  # roughly center of divergence?
@@ -605,7 +502,7 @@ def fit(img):
     # xyExpect = xyExpect - meanXY
 
     # # use the plot to find the center of divergence...
-    err = xyExpect - xyMeas
+    # err = xyExpect - xyMeas
     # magErr = numpy.linalg.norm(err, axis=1)
 
     # # throw out outliers
@@ -616,18 +513,17 @@ def fit(img):
     # err = err[keep]
 
     # make it circular
-    # _r = numpy.linalg.norm(xyMeas, axis=1)
-    # maxRad = numpy.max(xyMeas[:,1])*0.8  # max y value
-    # keep = _r <= maxRad
-    # xyMeas = xyMeas[keep]
-    # xyExpect = xyExpect[keep]
-    # err = err[keep]
+    _r = numpy.linalg.norm(xyMeas, axis=1)
+    maxRad = numpy.max(xyMeas[:,1])*0.8  # max y value
+    keep = _r <= maxRad
+    xyMeas = xyMeas[keep]
+    xyExpect = xyExpect[keep]
 
-    plt.figure(figsize=(9,9))
-    plt.quiver(xyMeas[:,0], xyMeas[:,1], err[:,0], err[:,1], angles="xy", scale=2)
-    plt.axis("equal")
-    plt.title("raw errors")
-    plt.show()
+    # plt.figure(figsize=(9,9))
+    # plt.quiver(xyMeas[:,0], xyMeas[:,1], err[:,0], err[:,1], angles="xy", scale=2/0.02)
+    # plt.axis("equal")
+    # plt.title("raw errors")
+    # plt.show()
 
     # xMid = 81.5
     # yMid = -72.5
@@ -635,13 +531,13 @@ def fit(img):
     # xyMeas = xyMeas - numpy.array([xMid, yMid])
     # xyExpect = xyExpect - numpy.array([xMid, yMid])
 
-    print("RMS err prefit (micron)", numpy.sqrt(numpy.mean(err**2))*1000)
+    # print("RMS err prefit (micron)", numpy.sqrt(numpy.mean(err**2))*1000)
 
 
     if True:
-        model = AffineTransform()
+        # model = AffineTransform()
         # model = EuclideanTransform()
-        # model = SimilarityTransform()
+        model = SimilarityTransform()
         t1 = time.time()
         isOK = model.estimate(xyMeas, xyExpect)
         print("affine fit took", time.time()-t1)
@@ -708,7 +604,7 @@ def fit(img):
     yUnit = xyFitUnit[:,1]
 
     if False:
-        nRadTerms = 4
+        nRadTerms = 6
         t1 = time.time()
         zern, dx, dy = zerns2(xUnit, yUnit, nRadTerms)
         dx = dx[3:]
@@ -764,7 +660,7 @@ def fit(img):
         print("RMS err post zern fit (micron)", numpy.sqrt(numpy.mean(err**2))*1000/rScale)
 
         plt.figure(figsize=(9,9))
-        plt.quiver(xUnit, yUnit, err[:,0], err[:,0], angles="xy", scale=0.5*vecScale*rScale)
+        plt.quiver(xUnit, yUnit, err[:,0], err[:,1], angles="xy", scale=0.5*vecScale*rScale)
         plt.title("zernike fit residuals")
         plt.show()
 
@@ -808,7 +704,6 @@ def fit(img):
 
         t1 = time.time()
         coef, resid, rank, s = numpy.linalg.lstsq(dxy, xyErr)
-        print("zern fit took", time.time()-t1)
 
         plt.figure()
         plt.plot(numpy.arange(len(coef)), coef)
@@ -852,95 +747,11 @@ def fit(img):
 
 if __name__ == "__main__":
     # bestfile = "cam2_meandots_0.010.fits"
-    # for file in glob.glob("*.fits"):
-    for file in ["mean_005_4.25um.fits"]:
+    # for file in glob.glob("cam0*.fits"):
+    for file in ["cam0_meandots_0.010.fits"]:
         print('on file', file)
         centroidSkimage(file, plot=False)
         associate(file)
         fit(file)
         print("\n\n\n")
-
-    # xs = numpy.linspace(-0.5,0.5,10)
-    # ys = xs[:]
-    # dxy = zerns(xs[0],ys[0])
-    # import pdb; pdb.set_trace()
-
-    # fit()
-
-    # nPts = 10000
-    # maxOrder = 5
-    # r = numpy.random.uniform(0,1,size=nPts)
-    # t = numpy.random.uniform(0, numpy.pi*2, size=nPts)
-    # x = numpy.sqrt(r)*numpy.cos(t)
-    # y = numpy.sqrt(r)*numpy.sin(t)
-
-    # z, dx, dy = zerns2(x,y,maxOrder)
-
-    # for ii, (_dx, _dy) in enumerate(zip(dx, dy)):
-    #     plt.figure(figsize=(9,9))
-    #     plt.quiver(x, y, _dx, _dy, angles="xy", scale=100)
-    #     plt.title("%i"%ii)
-    #     plt.axis("equal")
-
-    # plt.show()
-
-
-
-
-    # maxOrd = 20 # orders start at 0
-    # xs = numpy.zeros(50000) + 0.5
-    # ys = numpy.zeros(50000) + 0.1
-    # t1 = time.time()
-    # out = zerns2(xs[0], ys[0], maxOrd)
-    # print("took ", time.time()-t1)
-    # print(out[1].shape, maxOrd)
-    # # print(out[0])
-    # print("\n\n")
-
-    # out = zerns(xs[0], ys[0])
-
-    # import pdb; pdb.set_trace()
-
-
-
-
-
-"""
-Pyguide summary:
-found centroids 17470 in 1115.1218650341034
-mediandots_0.001.fits mean error px 0.5733844822716175
-found centroids 12457 in 842.449245929718
-mediandots_0.006.fits mean error px 1.042507885494916
-found centroids 17238 in 1210.1206440925598
-mediandots_0.010.fits mean error px 0.8101053860166332
-found centroids 16301 in 1116.7551679611206
-mediandots_0.008.fits mean error px 0.8783760734513005
-found centroids 17428 in 1225.8801662921906
-mediandots_0.005.fits mean error px 0.5534137333519673
-found centroids 17467 in 1193.7263021469116
-mediandots_0.003.fits mean error px 0.5645482298225228
-found centroids 12389 in 864.9349727630615
-meandots_0.006.fits mean error px 1.0139918157579073
-found centroids 17472 in 1181.9330270290375
-meandots_0.001.fits mean error px 0.5752984206437881
-found centroids 17471 in 1217.650855064392
-meandots_0.003.fits mean error px 0.5643244498392236
-found centroids 16101 in 1088.2285590171814
-meandots_0.008.fits mean error px 1.0251576179161526
-found centroids 17125 in 1199.1868779659271
-meandots_0.005.fits mean error px 0.599100617192079
-"""
-
-
-
-
-# data = fitsio.read("bcam1-0001.fits")
-# data = skimage.util.invert(data)
-# data = data - numpy.min(data)
-# data[data < 2500] = 0
-# print(numpy.min(data), numpy.max(data))
-# # data = (data-MaxCounts)*-1
-# plt.figure(figsize=(8,8))
-# plt.imshow(data, origin="lower")
-# plt.show()
 
