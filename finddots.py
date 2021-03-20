@@ -16,10 +16,12 @@ from coordio.fitData import TransRotScaleModel, ModelFit, QuadrupoleModel
 import time
 import os
 
+import scipy
+
 import seaborn as sns
 
 cam1Shape = (3660, 5488)
-cam2Shape = (3660, 5484)
+# cam2Shape = (3660, 5484)
 
 rowPix = cam1Shape[0]
 colPix = cam1Shape[1]
@@ -64,12 +66,62 @@ invmask[rowCen-1000:rowCen+1001,colCen-1000:colCen+1001] = 1
 
 # http://www.dm.unibo.it/home/citti/html/AnalisiMM/Schwiegerlink-Slides-Zernike.pdf
 
+def fCirc(x, xData, yData, weights):
+    xc, yc, r = x
+
+    err = ((xData-xc)**2 + (yData-yc)**2 - r**2)**2
+    return numpy.mean(err*weights)
+
+
+def circMean(rows, cols, intensity, rGuess=6):
+    # https://scipy-cookbook.readthedocs.io/items/Least_Squares_Circle.html
+
+    intensity = intensity - numpy.min(intensity)
+
+    maxInten = numpy.max(intensity)
+    intensity[intensity < 0.05 * maxInten] = 0
+
+    intensity = intensity / numpy.sum(intensity)
+
+
+    # plt.figure()
+    # plt.plot(numpy.arange(len(intensity)), intensity)
+    # plt.show()
+
+    # plt.figure()
+    # sns.scatterplot(x=cols, y=rows, hue=intensity)
+    # plt.axis("equal")
+
+    # expected value (marginal mean)
+    y_m = numpy.sum(rows * intensity)
+    x_m = numpy.sum(cols * intensity)
+
+    return y_m, x_m
+
+    # xInit = numpy.array([x_m, y_m, rGuess])
+    # t1 = time.time()
+    # res = scipy.optimize.minimize(fCirc, xInit, args=(cols, rows, intensity), method="Powell")
+    # # print("took", time.time()-t1)
+
+    # offset = numpy.sqrt((res.x[0] - x_m)**2 + (res.x[1] - y_m)**2)
+    # rDiff = rGuess - res.x[2]
+    # # print("diff", offset, rDiff)
+    # # import pdb; pdb.set_trace()
+
+    # # plt.plot(x_m,y_m,"+r")
+    # # plt.show()
+    # # print("xy mean", y_m, x_m)
+
+    # xc, yc, rad = res.x
+    # return y_m, x_m, xc, yc, rad
+
 
 def getImgData(imgName):
     data = fitsio.read(imgName)
     data = skimage.util.invert(data)
     data = data - numpy.min(data)
     data = data / numpy.max(data)
+    # data = data[rowCen-1000:1001+rowCen,colCen-1000:colCen+1001]
     return data
 
 
@@ -120,25 +172,80 @@ def centroidSkimage(img, plot=True):
 
     xCent = []
     yCent = []
+    xCent2 = []
+    yCent2 = []
+    xCent3 = []
+    yCent3 = []
+    rad2 = []
     ecen = []
     rad = []
+
+    sobData = sobel(data)
+    boxRad = 13
+    maxRow, maxCol = data.shape
 
     for region in props:
         # _yCent, _xCent = region.weighted_centroid
         _yCent, _xCent = region.centroid
+        _rowCent = int(_yCent)
+        _colCent = int(_xCent)
         _ecen = region.eccentricity
         _rad = region.equivalent_diameter/2
-        xCent.append(_xCent)
-        yCent.append(_yCent)
+
+        _inten = []
+        _cols = []
+        _rows = []
+
+        # check bounds
+        if _rowCent - boxRad <= 0:
+            continue
+        if _colCent - boxRad <= 0:
+            continue
+
+        if maxRow < boxRad + _rowCent + 1:
+            continue
+        if maxCol < _colCent + boxRad + 1:
+            continue
+
+        for _r in range(_rowCent-boxRad, _rowCent+boxRad+1):
+            for _c in range(_colCent-boxRad, _colCent+boxRad+1):
+                _inten.append(sobData[_r, _c])
+                _cols.append(_c)
+                _rows.append(_r)
+
+        _inten = numpy.array(_inten)
+        _cols = numpy.array(_cols)
+        _rows = numpy.array(_rows)
+
+        # print('rad', _rad)
+
+        # _yCent2, _xCent2, _xCent3, _yCent3, _rad2 = circMean(_rows, _cols, _inten, _rad)
+
+        _yCent2, _xCent2 = circMean(_rows, _cols, _inten, _rad)
+        # _xCent = _xCent2
+        # _yCent = _yCent2
+
+        # if numpy.sqrt((_yCent2-_yCent)**2+(_xCent2-_xCent)**2) > 2:
+        #     print("bad meas skipping")
+        #     continue
+
+        xCent.append(_xCent2)
+        yCent.append(_yCent2)
         ecen.append(_ecen)
         rad.append(_rad)
 
+        # xCent2.append(_xCent2)
+        # yCent2.append(_yCent2)
+        # xCent3.append(_xCent3)
+        # yCent3.append(_yCent3)
+        # rad2.append(_rad2)
+
+        # import pdb; pdb.set_trace()
+
     centroidData = numpy.array([xCent, yCent, ecen, rad]).T
 
-
-    ecenCut = centroidData[:,2] < 0.4
+    ecenCut = centroidData[:, 2] < 0.6
     centroidData = centroidData[ecenCut]
-
 
     if plot:
         plt.figure()
@@ -155,8 +262,16 @@ def centroidSkimage(img, plot=True):
         plt.figure(figsize=(8,8))
         plt.title(img)
         imshow(sobel(data))  # extent is set correctly so centers line up
-        for _x, _y, _e, _r in centroidData:
+        for ii, (_x, _y, _e, _r) in enumerate(centroidData):
+
             plotCircle(_x, _y, _r)
+            # _x2 = xCent2[ii]
+            # _y2 = yCent2[ii]
+            # plotCircle(_x2, _y2, _r2, color="white", linestyle="-.")
+
+            # _x3 = xCent3[ii]
+            # _y3 = yCent3[ii]
+            # plotCircle(_x2, _y2, _r2, color="orange", linestyle=":")
         print("plotting took", time.time()-t1)
         plt.show()
 
@@ -252,10 +367,10 @@ def associate(img):
     for x, y in xy:
         _rx = numpy.round(x)
         _ry = numpy.round(y)
-        if numpy.abs(x-_rx) > 0.2:
+        if numpy.abs(x-_rx) > 0.3:
             centroidsSkipped += 1
             continue
-        if numpy.abs(y-_ry) > 0.2:
+        if numpy.abs(y-_ry) > 0.3:
             centroidsSkipped += 1
             continue
         xyAssoc.append([x,y,_rx,_ry])
@@ -299,9 +414,10 @@ def associate(img):
     numpy.savetxt(img+".assoc", xyAssoc)
 
 
-def zerns(x, y):
+def zerns(x, y, zernOrder=20):
     # from: https://doi.org/10.1364/JOSAA.35.000840
-    # stopped at s17 because there is a typo in the paper?
+    # typo was fixed by author of paper (s#17 and a few more were wrong)
+    # but private correspondence fixed that
     out = numpy.array([
         [1, 0], #s2
         [0, 1], #s3
@@ -346,6 +462,8 @@ def zerns(x, y):
             60*(2135*x**4-7830*x**2*y**2+10948*y**4-350*x**2-3387*y**2) + 11171
         ]) # s21
     ])
+
+    out = out[:zernOrder]
 
     return out
 
@@ -513,11 +631,11 @@ def fit(img):
     # err = err[keep]
 
     # make it circular
-    _r = numpy.linalg.norm(xyMeas, axis=1)
-    maxRad = numpy.max(xyMeas[:,1])*0.8  # max y value
-    keep = _r <= maxRad
-    xyMeas = xyMeas[keep]
-    xyExpect = xyExpect[keep]
+    # _r = numpy.linalg.norm(xyMeas, axis=1)
+    # maxRad = numpy.max(xyMeas[:,1])*0.8  # max y value
+    # keep = _r <= maxRad
+    # xyMeas = xyMeas[keep]
+    # xyExpect = xyExpect[keep]
 
     # plt.figure(figsize=(9,9))
     # plt.quiver(xyMeas[:,0], xyMeas[:,1], err[:,0], err[:,1], angles="xy", scale=2/0.02)
@@ -673,11 +791,12 @@ def fit(img):
     else:
         # other zern type
         nPts = len(xUnit)
-        dx = numpy.zeros((nPts, 20))
-        dy = numpy.zeros((nPts, 20))
+        zernOrder = 20
+        dx = numpy.zeros((nPts, zernOrder))
+        dy = numpy.zeros((nPts, zernOrder))
         t1 = time.time()
         for ii, (x, y) in enumerate(zip(xUnit, yUnit)):
-            dxy = zerns(x,y)
+            dxy = zerns(x,y,zernOrder)
             dx[ii, :] = dxy[:,0]
             dy[ii, :] = dxy[:,1]
 
@@ -753,5 +872,5 @@ if __name__ == "__main__":
         centroidSkimage(file, plot=False)
         associate(file)
         fit(file)
-        print("\n\n\n")
+        # print("\n\n\n")
 
